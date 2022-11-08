@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+from types import NoneType
 import numpy as np
 import cv2, math
 import rospy, rospkg, time
@@ -15,6 +16,7 @@ import signal
 import sys
 import os
 import random
+#import keyboard
 
 import time
 
@@ -35,6 +37,17 @@ class Robotvisionsystem:
         self.angle = 0
         self.speed = 0.1
         self.stop = 0
+        self.trig = 0
+        self.turn_trig = 0
+        self.right_thresh = 0
+        self.left_thresh= 0
+        self.center_thresh = 0
+        self.save_time = 0
+        self.mode = 0
+
+        self.past_left_center = 0
+        self.past_right_center = 0
+        self.past_line_center = 0
 
         self.CAM_FPS = 30
         self.WIDTH, self.HEIGHT = 640, 480
@@ -47,7 +60,9 @@ class Robotvisionsystem:
         # image_sub = rospy.Subscriber("/usb_cam/image_raw",CompressedImage,img_callback)
 
         print ("----- Xycar self driving -----")
-        self.start()    
+        self.start()
+
+
 
     def img_callback(self, data):
         # print data
@@ -63,19 +78,39 @@ class Robotvisionsystem:
     def trackbar(self):
         img = self.image
         hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
-        cv2.namedWindow("TrackBar Windows")
-        cv2.setTrackbarPos("L-High","TrackBar Windows", 255)
-        cv2.setTrackbarPos("L-Low" ,"TrackBar Windows", 0)
+        cv2.namedWindow("Trackbar Windows")
+        cv2.createTrackbar("L-High", "Trackbar Windows", 0, 255, lambda x: x)
+        cv2.createTrackbar("L-Low", "Trackbar Windows", 0, 255, lambda x: x)
+
+        cv2.setTrackbarPos("L-High","Trackbar Windows", 255)
+        cv2.setTrackbarPos("L-Low" ,"Trackbar Windows", 110)
+        
         print ":::::"
         while cv2.waitKey(1) != ord('q'):
-            L_h = cv2.getTrackbarPos("L-High", "TrackBar Windows")
-            L_l = cv2.getTrackbarPos("L-Low" , "TrackBar Windows")
+            L_h = cv2.getTrackbarPos("L-High", "Trackbar Windows")
+            L_l = cv2.getTrackbarPos("L-Low" , "Trackbar Windows")
             HLS = cv2.inRange(hls, (0, L_l, 0), (255, L_h, 255))
             hls_out = cv2.bitwise_and(hls, hls, mask = HLS)
             result = cv2.cvtColor(hls_out, cv2.COLOR_HSV2BGR)
-            cv2.imshow("TrackBar Windows", result)
+            cv2.imshow("Trackbar Windows", result)
         
         cv2.destoryAllWindows()
+
+
+    def trackbar_canny(self):
+        img = self.image
+        
+        
+        print ":::::"
+        while cv2.waitKey(1) != ord('q'):
+            blur = cv2.GaussianBlur(img, (5, 5), 0)
+            H, L, S = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HLS))
+            _, L = cv2.threshold(L, 75, 110, cv2.THRESH_BINARY)
+            edge_img = cv2.Canny(np.uint8(L), 60, 70)
+            cv2.imshow("Trackbar Windows", edge_img)
+        
+        cv2.destoryAllWindows()
+
 
     def drive(self, angle, speed):
         
@@ -94,37 +129,53 @@ class Robotvisionsystem:
         self.unitymotor.publish(unitymotor_msg) 
 
     def start(self):
-        while not self.image.size == (self.WIDTH * self.HEIGHT * 3):
-            # print("==> Complete Load Image ")
-            continue
-
+        while not self.image.size == (self.WIDTH * self.HEIGHT * 3): continue
+        print("==> Complete Load Image ")
         while not rospy.is_shutdown(): # Main Loop
-            self.trackbar()
-    
-            # Task1 : Use OpenCV for Robotvisionsystem
-            '''
-            self.current_time = rospy.get_time()
+            #self.trackbar_canny()
+            #self.unitydrive(0, 0.1)
             
-            img = self.image.copy()
+            # Task1 : Use OpenCV for Robotvisionsystem
+            
+            self.current_time = rospy.get_time()
+
+            
+            
+            #img = self.image.copy()
+
+            img = self.image
             blur = cv2.GaussianBlur(img, (5, 5), 0)
             H, L, S = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HLS))
             _, L = cv2.threshold(L, 75, 110, cv2.THRESH_BINARY)
             edge_img = cv2.Canny(np.uint8(L), 60, 70)
+
+            
+
+
+            
             
             ## White line ##########################################
             if self.stop == 0:
                 # print("Flag stop == 0")
+                #line_roi = edge_img[360:480, 80:560]
                 line_roi = edge_img[360:480, 80:560]
 
                 # HoughLinesP
                 all_lines = cv2.HoughLinesP(line_roi, 1, math.pi/180,30,30,10)
+                #print ("all_line", all_lines)
+                
+                if all_lines is None:
+                    print ("nonono")
+                    all_lines = [[[0, 0, 0, 0]]]
+
 
                 # draw lines in ROI area
-                line_img = line_roi.copy()
+                line_img = line_roi.copy()  ##### line
+
                 for line in all_lines:
                     x1, y1, x2, y2 = line[0]
                     cv2.line(line_img, (x1, y1+240), (x2, y2+240), (0, 255, 0), 2)
-
+                
                 # calculate slope and do filtering
                 slopes = []
                 new_lines = []
@@ -207,17 +258,351 @@ class Robotvisionsystem:
                 cv2.rectangle(self.image, (right_center-5, 355), (right_center+5, 365), (0, 255, 0), 2) #right line center rectangle
                 cv2.rectangle(self.image, (line_center-5, 355), (line_center+5, 365), (0, 255, 0), 2)   #car center rectangle
 
-                self.angled = line_center - 320
+                '''
+                if self.trig == 0:
+                    self.right_thresh = right_center
+                    self.left_thresh = left_center
+                    self.center_thresh = line_center
+                    self.trig = 1
+
+                self.angled = right_center - self.right_thresh
                 self.angled = self.angled * 0.2
+                '''
+
+                
+                
+                if self.mode == 0:
+
+                    if self.trig == 0:
+                        self.right_thresh = right_center
+                        self.left_thresh = left_center
+                        self.center_thresh = line_center
+                        self.trig = 1
+
+                    self.angled =  self.center_thresh - line_center
+                
+                    if right_center < 360 or right_center > 500: #left_center < 0
+                        
+                        if self.turn_trig == 0:
+                            self.save_time = self.current_time
+                            self.turn_trig = 1
+                    else:
+                        self.angled = self.angled * 0.1
+                        
+                        
+                    if self.turn_trig == 1:
+                        if self.save_time + 10 < self.current_time:   #turn
+                            self.turn_trig = 0
+                            self.trig = 0
+                            self.mode = 1
+                        elif self.save_time +2 > self.current_time:
+                            #self.angled = self.angled * 0.1
+                            self.angled = 0
+                        else:
+                            self.angled = -25
+
+                elif self.mode==1:
+
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 14 < self.current_time:   #go
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 2
+                            
+                    else:
+                        #if right_center < 360 or right_center > 500:
+
+                        if left_center < 0:
+                            self.angled = -200 - left_center
+                            if self.past_left_center == left_center:
+                                self.angled = 0
+                        
+                        else:
+                            self.angled = 70 - left_center
+                            #self.angle = 0
+                            
+                        self.angled = self.angled * 0.1
+
+                        if self.angled > 5:
+                            self.angled = 5
+                        elif self.angled < -5:
+                            self.angled = -5
+                        # else:
+                        #     self.angled = 420 - right_center
+                        #     self.angled = self.angled * 0.1
+
+
+                elif self.mode ==2:
+                    
+                    # if self.trig == 0:
+                    #     self.right_thresh = right_center
+                    #     self.left_thresh = left_center
+                    #     self.center_thresh = line_center
+                    #     self.trig = 1
+
+                    #self.angled = right_center - 470
+                    self.angled = 0 
+                        
+                    if left_center < 0: #right_center < 360 or right_center > 600: 
+                        
+                        if self.turn_trig == 0:
+                            self.save_time = self.current_time
+                            self.turn_trig = 1
+                    else:
+                        self.angled = self.angled * 0.1
+
+                    if self.turn_trig == 1:
+                        if self.save_time + 10 < self.current_time:   #turn
+                            self.turn_trig = 0
+                            self.trig = 0
+                            self.mode = 3
+                        elif self.save_time +2 > self.current_time:
+                            #self.angled = self.angled * 0.1
+                            self.angled = 0
+                        else:
+                            self.angled = -25
+                    
+                elif self.mode == 3:
+                    
+                    # if self.trig == 0:
+                    #     self.right_thresh = right_center
+                    #     self.left_thresh = left_center
+                    #     self.center_thresh = line_center
+                    #     self.trig = 1
+
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 10 < self.current_time:   #go
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 4
+                            
+                    else:
+                        self.angled = 420 - right_center
+                        #self.angled = 240 - line_center
+
+                        self.angled = self.angled * 0.1
+
+                        if self.angled > 5:
+                            self.angled = 5
+                        elif self.angled < -5:
+                            self.angled = -5
+
+                    
+                        # self.angled = left_center - self.left_thresh
+                        # self.angled = self.angled * 0.1
+
+                elif self.mode ==4:
+                    # self.angled = 0
+                    # self.speed = 0
+                    
+                    #self.angled = 0 
+                        
+                    if (right_center < 360 or right_center > 550) and left_center < 0: # left_center < 0: #
+                        
+                        if self.turn_trig == 0:
+                            self.save_time = self.current_time
+                            self.turn_trig = 1
+                    else:
+                        self.angled = self.angled * 0.1
+
+                    if self.turn_trig == 1:
+                        if self.save_time + 10 < self.current_time:   #turn
+                            self.turn_trig = 0
+                            self.trig = 0
+                            self.mode = 5
+                        elif self.save_time +2 > self.current_time:
+                            self.angled = 0
+                            self.angled = self.angled * 0.1
+                        else:
+                            self.angled = -25
+
+
+                elif self.mode ==5:
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 2 < self.current_time:   #go
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 6
+                    else:
+                        #self.angled = 0
+
+                        if left_center < 0:
+                            self.angled = -180 - left_center
+                        else:
+                            self.angled = 50 - left_center
+                        self.angled = self.angled * 0.1
+
+                        if self.angled > 8:
+                            self.angled = 8
+                        elif self.angled < -8:
+                            self.angled = -8
+                
+                elif self.mode ==6:
+                    # self.angled = 0
+                    # self.speed = 0
+
+                    if right_center < 360 or right_center > 500: # left_center < -30: 
+                        if self.turn_trig == 0:
+                            self.save_time = self.current_time
+                            self.turn_trig = 1
+                    else:
+                        self.angled = self.angled * 0.1
+
+                    if self.turn_trig == 1:
+                        if self.save_time + 10 < self.current_time:   #turn
+                            self.turn_trig = 0
+                            self.trig = 0
+                            self.mode = 7
+                        else:
+                            self.angled = -25
+
+
+                elif self.mode == 7:
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 8 < self.current_time:   #go
+                        
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 8
+                    else:
+                        self.angled = 70 - left_center
+                        self.angled = self.angled * 0.1
+
+
+
+                elif self.mode == 8:
+                    # self.angled = 0
+                    # self.speed = 0
+                    if right_center < 360 or right_center > 500:
+                        
+                        if self.turn_trig == 0:
+                            self.save_time = self.current_time
+                            self.turn_trig = 1
+                    else:
+                        self.angled = 70 - left_center
+                        self.angled = self.angled * 0.1
+
+                    if self.turn_trig == 1:
+                        if self.save_time + 14 < self.current_time:   #turn
+                            self.turn_trig = 0
+                            self.trig = 0
+                            self.mode = 9
+                        elif self.save_time + 3 > self.current_time:
+                            self.angled = 0
+                        else:
+                            self.angled = 20
+
+                elif self.mode == 9:
+                    # self.angled = 0
+                    # self.speed = 0
+
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 2 < self.current_time:   #go
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 10
+                    else:
+                        self.angled = 0
+
+                    
+
+                elif self.mode == 10:
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 11 < self.current_time:   #go
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 11
+                    else:
+                        self.angled = 20
+
+
+
+
+
+                elif self.mode == 11:
+                    # self.angled = 0
+                    # self.speed = 0
+
+                    if self.turn_trig == 0:
+                        self.save_time = self.current_time
+                        self.turn_trig = 1
+
+                    if self.save_time + 5 < self.current_time:   #go
+                        self.turn_trig = 0
+                        self.trig = 0
+                        #self.angled = 0
+                        self.mode = 12
+                    else:
+                        self.angled = 420 - right_center
+                        self.angled = self.angled * 0.1
+
+                elif self.mode == 12:
+                    self.angled = 0
+                    self.speed = 0
+                
+                
+                
+                
+
+                
+
+                
                 if self.angled > 50:
                     self.angled = 30
                 elif self.angled < -50:
                     self.angled = -30
+
+                # if all_lines is None:
+                #     #self.angled = self.angled * 0.1
+                #     self.angled = 0
+                
+
+                print("Line center : ", line_center)
+                print("left center : ", left_center)
+                print("right center : ", right_center)
+                print("angled : ", self.angled)
+                print("save time : ", self.save_time)
+                print("time : ", self.current_time)
+                print("mode : ", self.mode)
+                print("self.past_left_center : ", self.past_left_center)
+
+                # self.past_left_center = 0
+                # self.past_right_center = 0
+                # self.past_line_center = 0
+
+                # self.past_left_center = left_center
+                # self.past_right_center = right_center
+                # self.past_line_center = line_center
+
             
             # except:
             #     print("Error whiteline")
             ################################################################
-
+            '''
             ## Stop line ROI Area ##########################################
             #640x480
             stop_x_min = 240
@@ -279,10 +664,11 @@ class Robotvisionsystem:
             # Draw Stopline Area x,y
             cv2.rectangle(self.image, (stop_x_min, stop_y_min), (stop_x_max, stop_y_max), (0, 0, 255), 2)
             ###############################################################
+            '''
             
             # self.angled = -30
             # self.speed = 0
-            print "Angle : ", self.angled, " Speed : ", self.speed
+            # print "Angle : ", self.angled, " Speed : ", self.speed
             # Publish xycar motor & unity motor
             self.drive(self.angled, self.speed)
             self.unitydrive(self.angled, self.speed)
@@ -291,7 +677,7 @@ class Robotvisionsystem:
             cv2.imshow("CAM View", self.image)
             cv2.imshow("Line", line_roi)
             cv2.waitKey(1)
-            '''
+            
             
             
 if __name__ == '__main__':
